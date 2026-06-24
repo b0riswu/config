@@ -37,6 +37,37 @@ VL_COST_DECIMALS=2
 VL_WARN_PCT=50                  # percentage thresholds for bar colors
 VL_HOT_PCT=75
 VL_ASCII=0                      # 1 = no Nerd Font glyphs (plain colored blocks)
+VL_FLOAT=0                      # 1 = also write a plain-text readout to VL_FLOAT_FILE (bring your own carrier)
+VL_FLOAT_SEGMENTS="model ctx cost"  # segments rendered into the float line (plain text: keep color-driven limit warnings inline)
+VL_FLOAT_SEP="  ·  "            # separator between float segments (plain text, no color)
+VL_FLOAT_FILE="$HOME/.claude/coralline/float.txt"
+VL_NOCOLOR=0                    # internal: fg()/bg() emit nothing when 1 (plain-text path)
+
+# ── Burn-rate segment (range-to-empty) ───────────────────────────────────────
+# Opt in by adding `burn` to VL_SEGMENTS*; the sampler below runs only then.
+CORALLINE_BURN_WINDOW=600       # recent-slope lookback for 5h, seconds
+VL_BURN_GLYPH="↗"               # plain-Unicode, arrow family (kept in VL_ASCII)
+VL_BG_BURN=""                   # empty → inherits VL_BG_5H at the use site
+BURN_FILE="${CORALLINE_BURN_FILE:-$HOME/.claude/coralline/burn-5h.tsv}"
+BURN_TRIM=1500                  # internal: max rows kept in the sample file
+
+# Cross-session limit sync (opt-in). Claude Code only re-renders a session's
+# statusline on activity, and the rate-limit % in each render's JSON is that
+# session's last-seen snapshot, so idle sessions show stale/divergent numbers.
+# With this on, every render records its 5h/7d (reset, pct) to a small per-host
+# high-water store, and limit5h/limit7d show the highest pct any session has seen
+# for the current window — so sessions converge whenever they redraw. It cannot
+# refresh a session that is not redrawing at all (that is a Claude Code limit).
+# The store is a directory-set (see rl_sample/rl_latest), race-free by design.
+VL_LIMIT_SYNC=0
+RL5H_FILE="${CORALLINE_RL5H_FILE:-$HOME/.claude/coralline/limit-5h.tsv}"
+RL7D_FILE="${CORALLINE_RL7D_FILE:-$HOME/.claude/coralline/limit-7d.tsv}"
+# Per-window ceilings for the sentinel guard (#32): a reset further out than its
+# window can possibly be is corrupt (e.g. sample-input.json's 2030 value) and must
+# never become the high-water. Kept per window because a stale 5h value a couple of
+# days out would clear a shared 7d-sized bound, so the 5h path needs its own.
+RL_MAX_5H=$(( 6 * 3600 ))       # internal: 5h window resets within ~5h (6h = +1h skew margin)
+RL_MAX_7D=$(( 8 * 86400 ))      # internal: 7d window resets within 7d (8d = +1d skew margin)
 
 # Powerline glyphs (printf -v keeps these fork-free; cleared when VL_ASCII=1)
 printf -v VL_CAP_L '\xee\x82\xb6'   # U+E0B6 left rounded cap
@@ -47,6 +78,7 @@ printf -v VL_SEP   '\xee\x82\xb0'   # U+E0B0 segment separator
 VL_BG_DIR="81,166,199"
 VL_BG_PROJECT=""               # optional; falls back to VL_BG_DIR when empty
 VL_BG_GIT_OK=65
+VL_BG_STASH=""                 # optional; falls back to VL_BG_GIT_OK when empty
 VL_BG_GIT_DIRTY=130
 VL_BG_MODEL=173
 VL_BG_CTX=238
@@ -120,12 +152,14 @@ NORM=$'\033[22m'
 # fg/bg set $_FG / $_BG to an ANSI escape (no subshell). Accept a 256-color
 # index, a "R,G,B" true-color triple, or empty (→ empty string, inherit color).
 fg() {
+  if [ "$VL_NOCOLOR" = "1" ]; then _FG=""; return; fi
   if [ -z "$1" ]; then _FG=""; return; fi
   if [ "${1#*,}" != "$1" ]; then
     local IFS=','; set -- $1; printf -v _FG '\033[38;2;%s;%s;%sm' "$1" "$2" "$3"
   else printf -v _FG '\033[38;5;%sm' "$1"; fi
 }
 bg() {
+  if [ "$VL_NOCOLOR" = "1" ]; then _BG=""; return; fi
   if [ -z "$1" ]; then _BG=""; return; fi
   if [ "${1#*,}" != "$1" ]; then
     local IFS=','; set -- $1; printf -v _BG '\033[48;2;%s;%s;%sm' "$1" "$2" "$3"
@@ -134,7 +168,12 @@ bg() {
 
 # ── Helpers (all return via a global, never via $() ) ─────────────────────────
 make_bar() {  # → _BAR ; $1=pct $2=width
+  local pct="${1:-0}" width="${2:-$VL_BAR_WIDTH}" i filled
   _BAR=""
+  filled=$(( (pct * width + 50) / 100 ))
+  [ "$filled" -gt "$width" ] && filled=$width
+  for ((i=0; i<filled; i++));     do _BAR="${_BAR}${VL_BAR_FILL}";  done
+  for ((i=filled; i<width; i++)); do _BAR="${_BAR}${VL_BAR_EMPTY}"; done
 }
 
 # 1234 → 1.2k · 1234567 → 1.2M (integer math only) → _TOK
@@ -146,9 +185,10 @@ fmt_tok() {
   else _TOK="$n"; fi
 }
 
-# Accepts epoch seconds (with or without decimals) or an ISO 8601 timestamp → _EP
-# Claude Code sends epoch ints, so the common path is fork-free; the ISO
-# fallback (rare) is the only place that may shell out to date.
+# Accepts epoch seconds (with or without decimals) or an ISO 8601 timestamp → _EP.
+# Claude Code sends rate-limit resets_at as ISO ("…Z"), so that branch shells out
+# to date once per call — the same fork seg_limit's countdown already pays. The
+# epoch-int branch is the fork-free path for callers that already hold epoch.
 to_epoch() {
   local t="$1" s
   [ -z "$t" ] && return 1
@@ -183,6 +223,264 @@ fmt_duration() {  # → _DUR ; $1=ms
   else                      printf -v _DUR '%ds' "$s"; fi
 }
 
+fmt_eta() {  # → _ETA ; $1=seconds (mirrors fmt_countdown's d/h/m formatting)
+  local s="${1:-0}" d h m
+  d=$(( s / 86400 )); h=$(( (s % 86400) / 3600 )); m=$(( (s % 3600) / 60 ))
+  if   [ "$d" -gt 0 ]; then printf -v _ETA '%dd%02dh' "$d" "$h"
+  elif [ "$h" -gt 0 ]; then printf -v _ETA '%dh%02dm' "$h" "$m"
+  else                      printf -v _ETA '%dm' "$m"; fi
+}
+
+burn_sample() {  # append one 5h sample; $1=now $2=pct(raw) $3=resets_at(raw)
+  [ -n "$2" ] || return 0
+  to_epoch "$3" || return 0
+  # Reject an implausibly-far-future reset (corrupt/sentinel snapshot): this is the
+  # 5h window, which resets within hours, so anything past now+RL_MAX_5H would
+  # otherwise poison the burn projection permanently (see #32).
+  [ "$_EP" -le "$(( $1 + RL_MAX_5H ))" ] || return 0
+  # [ -d ] is a builtin (steady state stays fork-free); mkdir forks only on the
+  # first render after a fresh install, when ~/.claude/coralline/ doesn't exist.
+  [ -d "${BURN_FILE%/*}" ] || mkdir -p "${BURN_FILE%/*}" 2>/dev/null
+  printf '%s\t%s\t%s\n' "$1" "$2" "$_EP" >> "$BURN_FILE" 2>/dev/null
+}
+
+# The store is a SET of atomically-created directory entries under <file>.d, each
+# named "<reset:%010d>_<pct:%07.3f>". Fixed widths make lexical order == numeric
+# order (reset dominates, pct tie-breaks), so the last entry is the current
+# window's high-water. Three race-free primitives, with no shared append and no
+# whole-file rewrite (so the rename-unlinks-the-inode hazard of a single mutable
+# file cannot occur):
+#   add  = one mkdir (atomic; concurrent adds make distinct names; idempotent)
+#   read = ls | sort | tail -1
+#   gc   = rmdir every snapshot entry below the snapshot max. Removing a non-max
+#          element cannot change the max, and entries added after the snapshot are
+#          untouched, so a concurrent higher add is never lost (no lock needed).
+rl_dir() { _RLD="${1%.tsv}.d"; }
+
+rl_sample() {  # $1=file $2=pct(raw int/float) $3=resets_at(raw) $4=max secs ahead
+  [ -n "$2" ] || return 0
+  to_epoch "$3" || return 0
+  # Reject an implausibly-far-future reset (corrupt/sentinel snapshot): a value past
+  # now plus this window's ceiling ($4) would win rl_latest's high-water forever and
+  # rmdir every real entry (see #32). The caller passes RL_MAX_5H or RL_MAX_7D so a
+  # stale 5h value days out is rejected, not just an absurd one. Guarded on NOW and
+  # on $4 being supplied so direct unit calls without a clock keep recording.
+  [ -z "${NOW:-}" ] || [ -z "${4:-}" ] || [ "$_EP" -le "$(( NOW + $4 ))" ] || return 0
+  rl_dir "$1"
+  if [ ! -d "$_RLD" ]; then
+    mkdir -p "$_RLD" 2>/dev/null
+    # One-shot migration: a pre-dir-set build kept a flat <file>.tsv (+ tmp); the
+    # dir-set never touches it, so drop it once when the dir is first created.
+    rm -f "$1" "$1".*.tmp 2>/dev/null
+  fi
+  local r p
+  printf -v r '%010d' "$_EP" 2>/dev/null || return 0
+  printf -v p '%07.3f' "$2"  2>/dev/null || return 0
+  mkdir "$_RLD/${r}_${p}" 2>/dev/null
+  return 0
+}
+
+rl_latest() {  # $1=file $2=max secs ahead → _LL_PCT _LL_RST (epoch)
+  _LL_PCT=""; _LL_RST=""
+  rl_dir "$1"; [ -d "$_RLD" ] || return 0
+  # ONE snapshot for both the max and the GC. A second listing could include an
+  # entry added after `hi` was chosen, and the loop would rmdir that fresher (and
+  # possibly higher) entry. Iterating the same snapshot means post-snapshot adds
+  # are never deletion candidates, so a concurrent higher add is never lost.
+  local snap hi d cut="" kept=""
+  # A store poisoned before this fix (a 2030 sentinel written by an old preview)
+  # would still pin every read: rl_latest picks the max reset and rmdirs the rest.
+  # So drop entries beyond now plus this window's ceiling ($2) on read too. That
+  # keeps the sentinel out of the high-water AND prunes it, so the store self-heals
+  # (#32). Guarded on NOW (and on $2 being supplied) so direct unit calls without a
+  # clock keep every entry. A real reset is never that far out, so a concurrent
+  # legitimate add is never a pruning candidate.
+  [ -z "${NOW:-}" ] || [ -z "${2:-}" ] || cut=$(( NOW + $2 ))
+  snap=$(ls -1 "$_RLD" 2>/dev/null | grep '^[0-9]' | sort)
+  [ -n "$snap" ] || return 0
+  for d in $snap; do
+    if [ -n "$cut" ] && [ "$(( 10#${d%_*} ))" -gt "$cut" ]; then
+      rmdir "$_RLD/$d" 2>/dev/null            # purge the poisoned sentinel entry
+    else
+      kept="${kept}${kept:+ }$d"
+    fi
+  done
+  [ -n "$kept" ] || return 0
+  hi="${kept##* }"             # kept is built in sorted order, so the last is the max
+  _LL_RST=$(( 10#${hi%_*} ))   # 10# avoids the leading-zero octal trap on the reset
+  _LL_PCT="${hi#*_}"           # keep as string so a fractional pct is preserved
+  for d in $kept; do
+    [ "$d" = "$hi" ] || rmdir "$_RLD/$d" 2>/dev/null
+  done
+}
+
+burn_eta_5h() {  # → _B5_STATE _B5_ETA _B5_RATE _B5_TTR ; trims $BURN_FILE
+  _B5_STATE="warming"; _B5_ETA="inf"; _B5_RATE="0"; _B5_TTR="0"
+  [ -f "$BURN_FILE" ] || return 0
+  local tmp="$BURN_FILE.$$.tmp" out
+  out=$(awk -F'\t' -v now="$NOW" -v win="$CORALLINE_BURN_WINDOW" \
+            -v trim="$BURN_TRIM" -v tmp="$tmp" -v maxahead="$RL_MAX_5H" '
+    $2 != "" {
+      e = $1 + 0; r = $3 + 0
+      # Drop a row whose reset is implausibly far out (a 2030 sentinel from an old
+      # sample preview). Left in, it becomes the "current window" below and starves
+      # the real samples; dropping it on read self-heals a pre-fix poisoned file (#32).
+      if (r > now + maxahead) { dropped = 1; next }
+      if (!(e in seen)) { ord[++n] = e; seen[e] = 1 }
+      pct[e] = $2 + 0; rst[e] = r
+    }
+    END {
+      if (n == 0) { print "warming inf 0 0"; next_done = 1 }
+      if (!next_done) {
+        # Fit the slope over the CURRENT window only. The sample file is shared
+        # by every concurrent session writing to this host; idle ones keep
+        # appending stale snapshots from earlier windows (a different reset).
+        # Mixing windows lets the fit pair two samples seconds apart but tens of
+        # percent apart, giving a near-vertical rate and a bogus ~1m ETA. The
+        # current window is the one with the latest reset; keep only its samples
+        # (cord[1..m]) in file order, then run the recent-slope fit over them.
+        cur = 0
+        for (i = 1; i <= n; i++) if (rst[ord[i]] > cur) cur = rst[ord[i]]
+        m = 0
+        for (i = 1; i <= n; i++) if (rst[ord[i]] == cur) cord[++m] = ord[i]
+        # Within the current window usage only ever rises until the window
+        # resets, so any decrease here is cache-lag jitter between concurrent
+        # sessions (their rate-limit caches refresh at different moments), NOT a
+        # reset — a real reset lands in a new window and was filtered out above.
+        # Anchoring the fit at the window start keeps a few jitter down-blips
+        # from collapsing it onto the last 1-2 samples and exploding the slope
+        # into a bogus ~1m ETA.
+        start = 1
+        le = cord[m]; lp = pct[le]
+        ttr = cur - now; if (ttr < 0) ttr = 0
+        cwin = now - win
+        # Crossings must span at least this long to trust a slope. Cache-lag
+        # jitter between sessions is second-scale, so a sub-minute span is noise;
+        # a genuine fast burn still rises over many seconds and clears this, so
+        # the guard rejects only second-scale noise, not real fast consumption.
+        minspan = int(win / 10)
+        fc_t = 0; fc_p = -1; lc_t = 0; lc_p = -1; ncross = 0; anycross = 0
+        for (i = start + 1; i <= m; i++) {
+          a = int(pct[cord[i-1]]); b = int(pct[cord[i]])
+          if (b > a) {
+            anycross = 1; ct = cord[i]
+            if (ct >= cwin && ct <= now) {
+              if (fc_p < 0) { fc_t = ct; fc_p = b }
+              lc_t = ct; lc_p = b; ncross++
+            }
+          }
+        }
+        if (ncross >= 2 && lc_t > fc_t && lc_p > fc_p && (lc_t - fc_t) >= minspan) {
+          rate = (lc_p - fc_p) / (lc_t - fc_t)
+          eta = (100 - lp) / rate; if (eta < 0) eta = 0
+          printf "active %.0f %.10f %d\n", eta, rate, ttr
+        } else if (anycross && ncross == 0) {
+          print "idle inf 0 " ttr
+        } else {
+          print "warming inf 0 " ttr
+        }
+        # Trim on PHYSICAL rows (NR), not distinct seconds (n): sub-second render
+        # bursts (resize storms) append same-second rows that n dedups away, so an
+        # n-based cap would never fire and the file would grow unbounded. The
+        # rewrite emits the deduped last-`trim` seconds, so it also collapses the
+        # burst rows. Fires when the file exceeds the cap, or when a sentinel row
+        # was dropped above, so the poisoned row is purged from the file too (#32).
+        if (NR > trim || dropped) {
+          lo = n - trim + 1; if (lo < 1) lo = 1
+          for (i = lo; i <= n; i++)
+            printf "%d\t%s\t%d\n", ord[i], pct[ord[i]], rst[ord[i]] > tmp
+        }
+      }
+    }
+  ' "$BURN_FILE")
+  [ -f "$tmp" ] && mv "$tmp" "$BURN_FILE" 2>/dev/null
+  for _f in "$BURN_FILE".*.tmp; do        # sweep tmps orphaned by dead sessions
+    [ -e "$_f" ] || break                  # literal glob → no orphans
+    [ "$_f" = "$tmp" ] || rm -f "$_f" 2>/dev/null
+  done
+  read -r _B5_STATE _B5_ETA _B5_RATE _B5_TTR <<EOF
+$out
+EOF
+}
+
+burn_eta_7d() {  # → _B7_* (stateless); $1=pct(=wd_pct) $2=resets_at(=wd_rst)
+  local p7="${1:-$wd_pct}" r7="${2:-$wd_rst}"
+  _B7_ETA="inf"; _B7_RATE="0"; _B7_TTR="0"
+  [ -n "$p7" ] || return 0
+  to_epoch "$r7" || return 0
+  read -r _B7_ETA _B7_RATE _B7_TTR <<EOF
+$(awk -v p="$p7" -v r="$_EP" -v now="$NOW" 'BEGIN {
+    ttr = r - now; if (ttr < 0) ttr = 0
+    ws = r - 7 * 86400; el = now - ws
+    if (p + 0 <= 0 || el <= 0) { print "inf 0 " ttr; exit }
+    rate = (p + 0) / el
+    eta = (100 - (p + 0)) / rate; if (eta < 0) eta = 0
+    printf "%.0f %.10f %d\n", eta, rate, ttr
+  }')
+EOF
+}
+
+burn_estimate() {  # → _BURN_STATE _BURN_LABEL _BURN_ETA _BURN_RATE _BURN_TTR
+  burn_eta_5h
+  # 5h already reads the shared sample file, so it is cross-session. For 7d, when
+  # limit-sync is on, project from the same synced value the limit7d segment shows
+  # so burn and limit7d cannot contradict each other on a stale local snapshot.
+  if [ "$VL_LIMIT_SYNC" = "1" ]; then
+    rl_latest "$RL7D_FILE" "$RL_MAX_7D"
+    if [ -n "$_LL_PCT" ]; then burn_eta_7d "$_LL_PCT" "$_LL_RST"; else burn_eta_7d; fi
+  else
+    burn_eta_7d
+  fi
+  local f5=0 f7=0
+  [ "$_B5_ETA" != "inf" ] && f5=1
+  [ "$_B7_ETA" != "inf" ] && f7=1
+  if [ "$f5" = 1 ] && { [ "$f7" = 0 ] || [ "$_B5_ETA" -le "$_B7_ETA" ]; }; then
+    _BURN_STATE="active"; _BURN_LABEL="5h"
+    _BURN_ETA="$_B5_ETA"; _BURN_RATE="$_B5_RATE"; _BURN_TTR="$_B5_TTR"
+  elif [ "$f7" = 1 ]; then
+    _BURN_STATE="active"; _BURN_LABEL="7d"
+    _BURN_ETA="$_B7_ETA"; _BURN_RATE="$_B7_RATE"; _BURN_TTR="$_B7_TTR"
+  else
+    _BURN_ETA="inf"; _BURN_RATE="0"; _BURN_TTR="0"; _BURN_LABEL=""
+    if [ "$_B5_STATE" = "idle" ]; then _BURN_STATE="idle"; else _BURN_STATE="warming"; fi
+  fi
+}
+
+seg_burn() {  # range-to-empty ETA until the binding 5h/7d limit hits 100% at the recent burn rate
+  [ -n "$fh_pct" ] || [ -n "$wd_pct" ] || return 0
+  # _BURN_* is precomputed once per render (see the burn_estimate call beside the
+  # sampler below), so the visible and float passes share one computation.
+  local bg="${VL_BG_BURN:-$VL_BG_5H}"
+  # Nothing to project yet. Idle (stopped burning) is genuinely all-good → dim ✓.
+  # Warming (no samples yet, e.g. a fresh install) is "unknown", not healthy → a
+  # distinct dim … so a cold start doesn't read as a reassuring green check.
+  if [ "$_BURN_STATE" != "active" ]; then
+    fg "$VL_FG_DIM"
+    if [ "$_BURN_STATE" = "warming" ]; then
+      push "$bg" "${_FG} ${VL_BURN_GLYPH} … "
+    else
+      push "$bg" "${_FG} ${VL_BURN_GLYPH} ✓ "
+    fi
+    return 0
+  fi
+  local eta="$_BURN_ETA" ttr="$_BURN_TTR" col win
+  # All good: the projected empty is longer than the limit's whole window, so at
+  # this pace you couldn't run it dry even from a fresh window — show ✓, not a
+  # meaningless multi-day countdown. The window is per-limit (5h vs 7d).
+  case "$_BURN_LABEL" in 5h) win=18000 ;; *) win=604800 ;; esac
+  if [ "$eta" -gt "$win" ]; then
+    fg "$VL_FG_OK"
+    push "$bg" "${_FG} ${VL_BURN_GLYPH} ✓ "
+    return 0
+  fi
+  if   [ "$eta" -le "$ttr" ];               then col="$VL_FG_HOT"
+  elif [ $(( 10 * ttr )) -ge $(( 8 * eta )) ]; then col="$VL_FG_WARN"
+  else                                            col="$VL_FG_OK"; fi
+  fmt_eta "$eta"
+  fg "$col"
+  push "$bg" "${_FG} ${VL_BURN_GLYPH} ${_BURN_LABEL} ⇢ ${_ETA} "
+}
+
 pct_fg() {  # → _PFG (a color spec) ; $1=pct
   local pct="${1:-0}"
   if   [ "$pct" -ge "$VL_HOT_PCT" ];  then _PFG="$VL_FG_HOT"
@@ -206,6 +504,11 @@ now_strftime() {  # → _T ; $1=strftime fmt. Fork-free on bash 4.2+, one date c
 }
 
 # ── Git state (single subprocess, parsed once, used by git/stash segments) ──
+# All git below is read-only probing. Disable git's optional index lock so a
+# frequently-refreshed statusline never rewrites the index or contends for
+# index.lock with a real git operation (notably on Windows). Set once, inherited
+# by every git call here.
+export GIT_OPTIONAL_LOCKS=0
 GIT_BRANCH="" GIT_MARKS="" GIT_AB="" GIT_DIRTY=0 GIT_ROOT=""
 read_git() {
   local line oid="" head="" a="" b="" staged=0 unstaged=0 untracked=0
@@ -234,7 +537,7 @@ GIT
   # shared by every linked worktree — so it stays constant whichever worktree
   # you're in. Resolved only when the project segment is enabled, to keep the
   # one-git-call default untouched.
-  case " $VL_SEGMENTS $VL_SEGMENTS2 $VL_SEGMENTS3 " in *" project "*)
+  case "$_SEG_SCAN" in *" project "*)
     local cdir
     cdir=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
     [ -n "$cdir" ] || cdir=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
@@ -250,7 +553,9 @@ GIT
   [ "${b:-0}" -gt 0 ] 2>/dev/null && GIT_AB="${GIT_AB}⇣${b}"
   [ -n "$GIT_MARKS" ] && GIT_DIRTY=1
 }
-case " $VL_SEGMENTS $VL_SEGMENTS2 $VL_SEGMENTS3 " in *" git "*|*" stash "*|*" project "*) read_git ;; esac
+_SEG_SCAN=" $VL_SEGMENTS $VL_SEGMENTS2 $VL_SEGMENTS3 "
+[ "$VL_FLOAT" = "1" ] && _SEG_SCAN="$_SEG_SCAN$VL_FLOAT_SEGMENTS "
+case "$_SEG_SCAN" in *" git "*|*" stash "*|*" project "*) read_git ;; esac
 
 # ── Segments ─────────────────────────────────────────────────────────────────
 # Each seg_* appends (background, text, visible width) to the segment arrays.
@@ -326,9 +631,9 @@ seg_project() {  # repo-root name in a repo; falls back to dir outside one (unle
   push "${VL_BG_PROJECT:-$VL_BG_DIR}" "${BOLD}${_FG} ⬢ ${_TR} ${NORM}"
 }
 
-seg_dir() {
+seg_dir() {  # current directory, long paths collapsed to ~/a/…/z
   [ -n "$cwd" ] || return 0
-  local short="${cwd/#$HOME/~}" n last
+  local tilde='~'; local short="${cwd/#"$HOME"/$tilde}" n last
   local IFS='/'; set -- $short; n=$#
   if [ "$n" -gt "$VL_PATH_DEPTH" ]; then
     eval "last=\${$n}"
@@ -338,7 +643,7 @@ seg_dir() {
   push "$VL_BG_DIR" "${BOLD}${_FG} ${short} ${NORM}"
 }
 
-seg_git() {
+seg_git() {  # branch with staged/modified/untracked and ahead/behind counts
   [ -n "$GIT_BRANCH" ] || return 0
   local bgc="$VL_BG_GIT_OK"
   [ "$GIT_DIRTY" -eq 1 ] && bgc="$VL_BG_GIT_DIRTY"
@@ -346,15 +651,13 @@ seg_git() {
   push "$bgc" "${BOLD}${_FG} ⎇ ${_TR}${GIT_MARKS}${GIT_AB} ${NORM}"
 }
 
-seg_model() {
+seg_model() {  # active Claude model
   [ -n "$model" ] || return 0
-  local label="${model#Claude }"
-  label="${label//(1M context)/[1m]}"
   fg "$VL_FG_TEXT"
-  push "$VL_BG_MODEL" "${BOLD}${_FG} ◆ ${label} ${NORM}"
+  push "$VL_BG_MODEL" "${BOLD}${_FG} ◆ ${model#Claude } ${NORM}"
 }
 
-seg_ctx() {
+seg_ctx() {  # context-window gauge with input/output/cache token counts
   [ -n "$ctx_pct" ] || return 0
   local ci fgc fgd ti to cache_rate
   printf -v ci '%.0f' "$ctx_pct" 2>/dev/null || ci=0
@@ -381,10 +684,24 @@ seg_limit() {  # $1=label $2=pct $3=resets_at $4=bg
   if [ -n "$_CD" ]; then fg "$VL_FG_DIM"; rst="${_FG}↺${_CD}"; fi
   push "$4" "${fgc} $1 ${_BAR} ${v}% ${rst} "
 }
-seg_limit5h() { seg_limit "5h" "$fh_pct" "$fh_rst" "$VL_BG_5H"; }
-seg_limit7d() { seg_limit "7d" "$wd_pct" "$wd_rst" "$VL_BG_7D"; }
+# With VL_LIMIT_SYNC, show the freshest cross-session value for the current
+# window (falling back to this session's own snapshot when none is recorded).
+seg_limit5h() {  # 5h rate-limit gauge with reset countdown
+  local p="$fh_pct" r="$fh_rst"
+  if [ "$VL_LIMIT_SYNC" = "1" ]; then
+    rl_latest "$RL5H_FILE" "$RL_MAX_5H"; [ -n "$_LL_PCT" ] && { p="$_LL_PCT"; r="$_LL_RST"; }
+  fi
+  seg_limit "5h" "$p" "$r" "$VL_BG_5H"
+}
+seg_limit7d() {  # 7d rate-limit gauge with reset countdown
+  local p="$wd_pct" r="$wd_rst"
+  if [ "$VL_LIMIT_SYNC" = "1" ]; then
+    rl_latest "$RL7D_FILE" "$RL_MAX_7D"; [ -n "$_LL_PCT" ] && { p="$_LL_PCT"; r="$_LL_RST"; }
+  fi
+  seg_limit "7d" "$p" "$r" "$VL_BG_7D"
+}
 
-seg_cost() {
+seg_cost() {  # session cost in USD
   [ -n "$cost" ] && [ "$cost" != "0" ] || return 0
   local fmt
   printf -v fmt "\$%.${VL_COST_DECIMALS}f" "$cost" 2>/dev/null || fmt="\$$cost"
@@ -392,7 +709,7 @@ seg_cost() {
   push "$VL_BG_COST" "${_FG} ${fmt} "
 }
 
-seg_clock() {
+seg_clock() {  # time, 12h or 24h
   [ "$VL_CLOCK" = "off" ] && return 0
   if [ "$VL_CLOCK" = "24h" ]; then
     [ "$VL_CLOCK_SECONDS" = "1" ] && now_strftime '%H:%M:%S' || now_strftime '%H:%M'
@@ -404,7 +721,7 @@ seg_clock() {
   push "$VL_BG_CLOCK" "${_FG} ⊙ ${_T} "
 }
 
-seg_lines() {
+seg_lines() {  # lines added/removed this session
   [ "${lines_add:-0}" -gt 0 ] 2>/dev/null || [ "${lines_del:-0}" -gt 0 ] 2>/dev/null || return 0
   local fgo fgh
   fg "$VL_FG_OK";  fgo="$_FG"
@@ -412,13 +729,13 @@ seg_lines() {
   push "$VL_BG_LINES" " ${fgo}+${lines_add} ${fgh}-${lines_del} "
 }
 
-seg_style() {
+seg_style() {  # active output style
   [ -n "$out_style" ] && [ "$out_style" != "default" ] || return 0
   fg "$VL_FG_TEXT"
   push "$VL_BG_STYLE" "${_FG} ✎ ${out_style} "
 }
 
-seg_duration() {
+seg_duration() {  # session wall-clock duration
   [ "${dur_ms:-0}" -gt 0 ] 2>/dev/null || return 0
   fmt_duration "$dur_ms"
   fg "$VL_FG_TEXT"
@@ -433,13 +750,13 @@ seg_effort() {  # reasoning effort level (low/medium/high/xhigh/max); glyph ψ i
   push "$VL_BG_EFFORT" "${_FG} ψ ${label} "
 }
 
-seg_stash() {
+seg_stash() {  # git stash count
   [ -n "$GIT_BRANCH" ] || return 0
   local n
   n=$(git -C "$cwd" rev-list --walk-reflogs --count refs/stash 2>/dev/null) || return 0
   [ "${n:-0}" -gt 0 ] || return 0
   fg "$VL_FG_TEXT"
-  push "$VL_BG_GIT_OK" "${_FG} ⚑ ${n} "
+  push "${VL_BG_STASH:-$VL_BG_GIT_OK}" "${_FG} ⚑ ${n} "
 }
 
 # ── Render ───────────────────────────────────────────────────────────────────
@@ -489,6 +806,61 @@ term_cols() {  # → _COLS
   case "$c" in (''|*[!0-9]*) c=0 ;; esac
   _COLS="$c"
 }
+
+# Sample only when the burn segment is actually shown — the segment list is the
+# single source of truth, so enabling burn in configure.sh just works. _SEG_SCAN
+# also covers VL_FLOAT_SEGMENTS, so burn samples even when it's only in the float
+# readout (mirrors how read_git is gated above).
+#
+# CORALLINE_NO_SAMPLE=1 makes a render read-only: it skips every write to the
+# cross-session stores. A preview/verification render (sample-input.json carries
+# a year-2030 sentinel reset) would otherwise win the high-water forever and prune
+# the real entries, so the documented preview commands set this flag (see #32).
+if [ "${CORALLINE_NO_SAMPLE:-0}" != 1 ]; then
+  case "$_SEG_SCAN" in *" burn "*) burn_sample "$NOW" "$fh_pct" "$fh_rst" ;; esac
+  # limit-sync records to its own high-water store (separate from the burn file),
+  # only for the limit segment that is actually shown.
+  if [ "$VL_LIMIT_SYNC" = "1" ]; then
+    case "$_SEG_SCAN" in *" limit5h "*) rl_sample "$RL5H_FILE" "$fh_pct" "$fh_rst" "$RL_MAX_5H" ;; esac
+    # burn also consumes the synced 7d (below), so sample it whenever burn shows too,
+    # otherwise burn would read a stale/older synced 7d instead of this render's value.
+    case "$_SEG_SCAN" in *" limit7d "*|*" burn "*) rl_sample "$RL7D_FILE" "$wd_pct" "$wd_rst" "$RL_MAX_7D" ;; esac
+  fi
+fi
+case "$_SEG_SCAN" in *" burn "*) burn_estimate ;; esac
+
+# Defensive ANSI stripper (the VL_NOCOLOR path should already emit none) → _PLAIN.
+strip_ansi() {
+  local s="$1" out=""
+  while [ "${s#*$ESC}" != "$s" ]; do
+    out+="${s%%$ESC*}" ; s="${s#*$ESC}" ; s="${s#*m}"
+  done
+  _PLAIN="$out$s"
+}
+
+# Build VL_FLOAT_SEGMENTS with color emission neutralized and write a single
+# plain-text line atomically to VL_FLOAT_FILE. Saves/restores the color globals
+# so the normal render that follows is unaffected.
+emit_float() {
+  local _nc="$VL_NOCOLOR" _b="$BOLD" _n="$NORM" _r="$R"
+  local dir line i s tmp
+  VL_NOCOLOR=1 ; BOLD="" ; NORM="" ; R=""
+  build_segments "$VL_FLOAT_SEGMENTS"
+  line=""
+  for ((i=0; i<${#SEG_TXT[@]}; i++)); do
+    strip_ansi "${SEG_TXT[$i]}" ; s="$_PLAIN"
+    s="${s#"${s%%[![:space:]]*}"}" ; s="${s%"${s##*[![:space:]]}"}"   # trim
+    [ -n "$s" ] || continue
+    line="${line:+$line$VL_FLOAT_SEP}$s"
+  done
+  VL_NOCOLOR="$_nc" ; BOLD="$_b" ; NORM="$_n" ; R="$_r"
+  dir=$(dirname "$VL_FLOAT_FILE")
+  mkdir -p "$dir"
+  tmp="$dir/.float.tmp.$$"
+  printf '%s\n' "$line" > "$tmp" && mv -f "$tmp" "$VL_FLOAT_FILE" || rm -f "$tmp"
+}
+
+[ "$VL_FLOAT" = "1" ] && emit_float
 
 if [ "$VL_LAYOUT" = "auto" ]; then
   build_segments "$VL_SEGMENTS"

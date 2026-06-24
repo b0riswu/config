@@ -39,7 +39,23 @@
       "Bash(terraform validate *)",
       "Bash(helm template *)",
       "Bash(kubectl get *)",
-      "Bash(kubectl describe *)"
+      "Bash(kubectl describe *)",
+      "Bash(gh repo list *)",
+      "Bash(gh repo view *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh issue list *)",
+      "Bash(gh issue view *)",
+      "Bash(gh api *)",
+      "Bash(gh search *)",
+      "Bash(gh release list *)",
+      "Bash(gh release view *)",
+      "Bash(gh auth status *)",
+      "mcp__gpt-image-gen__generate_image",
+      "mcp__gpt-image-gen__edit_image",
+      "mcp__diagram-gen__render_mermaid",
+      "mcp__diagram-gen__render_plantuml"
     ],
     "deny": [
       "Bash(git reset --hard*)",
@@ -50,9 +66,22 @@
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./secrets/**)"
-    ]
+    ],
+    "defaultMode": "auto"
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/jenkins-curl-netrc.sh",
+            "statusMessage": "Injecting Jenkins curl flags"
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "",
@@ -78,7 +107,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "bash ~/.claude/statusline-command.sh"
+    "command": "bash ~/.claude/statusline.sh"
   },
   "enabledPlugins": {
     "code-review@claude-plugins-official": true,
@@ -86,7 +115,53 @@
     "atlassian@claude-plugins-official": true,
     "plugin-dev@claude-plugins-official": true,
     "hookify@claude-plugins-official": true,
-    "learning-output-style@claude-plugins-official": true
+    "ultrathink@ekstend": true,
+    "barbarians-core@barbarian-ai": true,
+    "barbarians-toolbox@barbarian-ai": true,
+    "msgraph-tool@ai-skill-marketplace": true
   },
-  "alwaysThinkingEnabled": false
+  "extraKnownMarketplaces": {
+    "ekstend": {
+      "source": {
+        "source": "github",
+        "repo": "husniadil/ekstend"
+      }
+    },
+    "barbarian-ai": {
+      "source": {
+        "source": "git",
+        "url": "git@github.com:trendai-v1es-platform/barbarian-ai.git"
+      }
+    },
+    "ai-skill-marketplace": {
+      "source": {
+        "source": "git",
+        "url": "git@github.com:trend-ai-taskforce/ai-skill-marketplace.git"
+      }
+    }
+  },
+  "alwaysThinkingEnabled": false,
+  "skipAutoPermissionPrompt": true,
+  "mcpServers": {
+    "gpt-image-gen": {
+      "command": "node",
+      "args": [
+        "/Users/boris_wu/.claude/mcp-servers/gpt-image-gen/index.js"
+      ],
+      "env": {
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "OPENAI_BASE_URL": "${OPENAI_BASE_URL}"
+      }
+    },
+    "diagram-gen": {
+      "command": "node",
+      "args": [
+        "/Users/boris_wu/.claude/mcp-servers/diagram-gen/index.js"
+      ]
+    },
+    "ultrathink": {
+      "command": "/Users/boris_wu/.claude/mcp-servers/ultrathink/.venv/bin/ultrathink",
+      "args": []
+    }
+  }
 }
