@@ -88,6 +88,7 @@ fi
 # ── Brew auto-update ──
 step "Configuring brew auto-update..."
 mkdir -p ~/Library/LaunchAgents
+brew autoupdate delete 2>/dev/null || true
 brew autoupdate start 43200 --upgrade --cleanup || echo "Warning: brew autoupdate setup failed"
 
 # ── Oh My Zsh ──
