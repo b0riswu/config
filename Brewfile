@@ -24,6 +24,7 @@ brew "atuin"
 brew "golangci-lint"
 brew "gitleaks"
 brew "chezmoi"
+brew "pinentry-mac"
 
 # ── Container & Version Manager ──
 brew "colima"
