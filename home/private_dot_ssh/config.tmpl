@@ -1,5 +1,7 @@
 # Machine-specific overrides (not in git) — must come first (first-match-wins)
+{{ if eq .profile "home" -}}
 Include ~/.ssh/config.local
+{{ end -}}
 Include ~/.colima/ssh_config
 
 Host *

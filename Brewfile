@@ -7,6 +7,7 @@ brew "zsh-syntax-highlighting"
 brew "zsh-completions"
 brew "zoxide"
 brew "fzf"
+brew "ripgrep"
 brew "chroma"
 brew "starship"
 

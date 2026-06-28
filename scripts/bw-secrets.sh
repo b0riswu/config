@@ -49,7 +49,7 @@ NOTES=$(cat "$tmp")
 if [ -n "$EXISTING" ]; then
   ITEM_ID=$(echo "$EXISTING" | jq -r '.id')
   ENCODED=$(NOTES="$NOTES" jq '.notes = env.NOTES' <<< "$EXISTING" | bw encode)
-  bw edit item "$ITEM_ID" "$ENCODED" > /dev/null
+  echo "$ENCODED" | bw edit item "$ITEM_ID" > /dev/null
 else
   bw get template item | NOTES="$NOTES" jq \
     --arg name "$ITEM_NAME" \

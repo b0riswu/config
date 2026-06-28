@@ -223,7 +223,6 @@ verify "chezmoi"            command -v chezmoi
 verify "colima"             command -v colima
 verify "terraform-docs"     command -v terraform-docs
 verify "golangci-lint"      command -v golangci-lint
-verify "gcloud"             test -x "$(brew --prefix)/share/google-cloud-sdk/bin/gcloud"
 verify "aws"                command -v aws
 verify "bun"                bash -c 'eval "$(mise activate bash)" && command -v bun'
 verify "go (mise)"          bash -c 'eval "$(mise activate bash)" && command -v go'
