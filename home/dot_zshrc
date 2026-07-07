@@ -67,9 +67,8 @@ command -v atuin &>/dev/null && eval "$(atuin init zsh)"
 
 # Aliases
 alias c='ccat'
-v() (
-  cd "$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/Knowledge base"
-)
+alias v='cd "$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/Knowledge base"'
+
 claude-ds() {
   ANTHROPIC_BASE_URL="$DEEPSEEK_BASE_URL" \
   ANTHROPIC_API_KEY="$DEEPSEEK_API_KEY" \
