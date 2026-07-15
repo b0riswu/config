@@ -22,6 +22,10 @@ fi
 # Completions: FPATH must be set BEFORE oh-my-zsh.sh (which calls compinit)
 if [ -n "$BREW_PREFIX" ]; then
   FPATH="$BREW_PREFIX/share/zsh-completions:$BREW_PREFIX/share/zsh/site-functions:$FPATH"
+  # Fix stale compiled-in fpath after Homebrew zsh upgrade
+  if [[ ! -d "${fpath[-1]}" ]]; then
+    fpath[-1]="$BREW_PREFIX/share/zsh/functions"
+  fi
 fi
 
 # Skip compaudit insecure-dir warnings for brew-managed dirs
