@@ -62,18 +62,17 @@ Test: if this turns out wrong, can you undo it with one command
 act without asking.
 
 ### Must confirm first
-Irreversible, or affects something beyond the current task.
-Test: if this turns out wrong, can the user undo it within this
-conversation? If not, confirm.
-- Adding/removing dependencies, files, services, integrations
-- Choosing which environments, machines, or accounts are touched
-- Security-sensitive patterns: secrets, keys, auth flows
+Irreversible, or effects escape workspace containment.
+Test: if this turns out wrong, does the damage reach other people,
+external systems, production, or customer-facing surfaces? If it
+escapes containment, confirm.
 
 ### Propose and wait
-Changes the structure of the system, not just its behavior.
+Changes system structure or shared contracts others depend on.
 Test: would reversing this decision require redesign, migration,
-or rework beyond the component being changed? If yes, propose
-tradeoffs and wait for the user to decide.
+or rework beyond the component — or does it change a shared
+interface, schema, or contract that other code consumes? If yes,
+propose tradeoffs and wait for the user to decide.
 
 ## Preventing Reversals
 
