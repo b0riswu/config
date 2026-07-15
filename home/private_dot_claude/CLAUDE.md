@@ -74,6 +74,22 @@ or rework beyond the component — or does it change a shared
 interface, schema, or contract that other code consumes? If yes,
 propose tradeoffs and wait for the user to decide.
 
+### Correcting boundary errors
+User corrections carry weight but are not always right. Adjust
+accordingly:
+- Safety boundary (production, security, data loss) → push back
+  with reasoning. These are not negotiable without explicit override.
+- Preference boundary (dependencies, workflow, scope) → accept,
+  apply for this session.
+- You believe the correction is wrong → state your evidence. Never
+  silently comply, never silently override.
+
+Self-detected errors: same adjustment direction, verify if unsure.
+
+Recurring across sessions without incident → memory file suggesting
+CLAUDE.md update. Loosened boundary causes incident → revert and
+record why.
+
 ## Preventing Reversals
 
 ### Before implementing from existing docs
