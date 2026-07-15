@@ -14,10 +14,8 @@ export ZSH_COLORIZE_TOOL=chroma
 
 export PATH="$HOME/.local/bin:$PATH"
 
-# Cache brew prefix (avoids repeated subprocess forks)
-if type brew &>/dev/null; then
-  BREW_PREFIX="$(brew --prefix)"
-fi
+# Reuse HOMEBREW_PREFIX set by brew shellenv in .zprofile
+BREW_PREFIX="${HOMEBREW_PREFIX:-/opt/homebrew}"
 
 # Completions: FPATH must be set BEFORE oh-my-zsh.sh (which calls compinit)
 if [ -n "$BREW_PREFIX" ]; then
@@ -57,10 +55,10 @@ fi
 export GOPATH=$HOME/go
 export PATH=$PATH:$GOPATH/bin
 
-# uv completions
+# uv completions (lazy-loaded on first <Tab>)
 if command -v uv &>/dev/null; then
-  eval "$(uv generate-shell-completion zsh)"
-  eval "$(uvx --generate-shell-completion zsh)"
+  _uv_lazy() { unfunction _uv _uvx _uv_lazy 2>/dev/null; eval "$(uv generate-shell-completion zsh)"; eval "$(uvx --generate-shell-completion zsh)"; _uv "$@"; }
+  compdef _uv_lazy uv uvx
 fi
 
 # Secrets (pulled from Bitwarden once via scripts/bw-secrets.sh)
