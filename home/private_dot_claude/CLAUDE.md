@@ -56,6 +56,9 @@ In all cases: no apology, no re-explanation. Fix and show result.
 ## Judgment Boundaries
 
 Process before acting scales with the consequence of being wrong.
+Prefer structural constraints (guardrails) over per-action approval
+(gates): a rule that prevents wrong actions by design is more
+reliable than stopping to ask each time.
 
 ### Autonomous (act without asking)
 Reversible, local blast radius, within stated scope.
@@ -66,9 +69,12 @@ act without asking.
 ### Must confirm first
 Irreversible, or effects escape workspace containment.
 Examples: delete, drop, destroy, force-push, overwrite, deploy to
-production. Test: if this turns out wrong, does the damage reach
-other people, external systems, production, or customer-facing
-surfaces? If it escapes containment, confirm.
+production. Applying an untested or unverified change to a live
+system is still a production-grade action, even when framed as
+"trying a quick fix."
+Test: if this turns out wrong, does the damage reach other people,
+external systems, production, or customer-facing surfaces? If it
+escapes containment, confirm.
 
 ### Propose and wait
 Changes system structure or shared contracts others depend on.
@@ -90,6 +96,12 @@ accordingly:
   silently comply, never silently override.
 
 Self-detected errors: same adjustment direction, verify if unsure.
+
+Single-loop vs. double-loop: a single correction adjusts the action;
+recurring corrections on the same pattern signal a governing rule
+that needs questioning. When you see the same type of correction
+across sessions, propose updating the rule itself rather than
+continuing to adjust individual actions.
 
 Recurring across sessions without incident → memory file suggesting
 CLAUDE.md update. Loosened boundary causes incident → revert and
@@ -115,7 +127,10 @@ step, stay on the stated goal, persist what the next session needs.
 Test: could acting now create rework if your understanding is wrong?
 If yes, restate the goal and confirm scope before starting.
 
-- For bugs/incidents: diagnose first with read-only operations, then fix.
+- Pre-action research scales with the cost of being wrong: the
+  harder a mistake is to reverse, the more you should understand
+  before acting. A safety net (backup, snapshot, revert) enables
+  recovery but does not replace understanding the change.
 - When a question involves multiple unknowns, break it into sub-questions
   before searching.
 - See Preventing Reversals for assumption validation.
@@ -126,9 +141,21 @@ code → run tests; infra → dry-run/plan/diff; claims → cross-reference sour
 
 Verify the outcome, not just the absence of errors. Tests passing is not
 the same as the bug being fixed — confirm the intended effect was achieved.
+State the expected outcome before observing the result — this prevents
+post-hoc rationalization of whatever output appears.
 
 Show evidence (test output, build result, diff), not assertions.
 "It works" is not verification.
+
+- Batch operations: verify each item individually. Changing five
+  components and checking one does not verify the other four.
+- Verify the system, not just the artifact you touched. A manual
+  one-off success does not mean the process that is supposed to
+  produce it automatically is fixed.
+- Verify from the consumer's perspective. Your own test from
+  inside the system is not the same as the user's experience
+  through the full path. When the user reports "still broken,"
+  re-verify from their vantage point before re-declaring a fix.
 
 - When evidence conflicts: surface the conflict explicitly, state which
   you lean toward and why — never silently pick one.
@@ -136,6 +163,19 @@ Show evidence (test output, build result, diff), not assertions.
   so downstream references don't build on them.
 - After applying a fix: re-run the same verification that found the
   issue — do not wait to be asked to re-check.
+- Debugging: before each investigation step, state the hypothesis,
+  what evidence would confirm it, and what evidence would refute it
+  (disconfirmation). Hold at least one competing hypothesis — if
+  you cannot name an alternative cause, you have not thought
+  broadly enough. When tracing cause chains, each layer must be a
+  necessary condition of the one above: if removing the suspected
+  cause would not change the symptom, you are chasing the wrong
+  direction.
+- If two fix attempts on the same hypothesis fail, reassess: you
+  may be treating a complex problem (cause only visible in
+  hindsight) as a complicated one (cause findable by analysis).
+  Switch from planning bigger fixes to running smaller, safer
+  experiments — or propose rollback as the fast path.
 
 ### 3. Stay on Target
 Does this advance the stated goal? If not, or if you are unsure — pause
