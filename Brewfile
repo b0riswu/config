@@ -11,6 +11,7 @@ brew "ripgrep"
 brew "chroma"
 brew "starship"
 brew "neovim"
+brew "bash"
 brew "tmux"
 
 # ── CLI Tools ──

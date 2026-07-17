@@ -209,6 +209,7 @@ verify() {
 
 # Commands
 verify "Homebrew"           command -v brew
+verify "bash (brew)"         test -x "$(brew --prefix)/bin/bash"
 verify "zsh (brew)"         test -x "$(brew --prefix)/bin/zsh"
 verify "Starship"           command -v starship
 verify "Ghostty"            test -d /Applications/Ghostty.app
