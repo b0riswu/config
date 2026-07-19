@@ -28,4 +28,5 @@ if command -v tmux >/dev/null 2>&1 && [ -n "${TMUX:-}" ]; then
         tmux set-option -wu @agent_state
         tmux set-option -pu @pane_agent_state
     fi
+    tmux refresh-client -S 2>/dev/null || true
 fi
