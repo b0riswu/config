@@ -19,14 +19,15 @@ case "$EVENT" in
     *)            STATE="" ;;
 esac
 
-# Stamp @agent_state on the current window and @pane_agent_state on the current pane
-if command -v tmux >/dev/null 2>&1 && [ -n "${TMUX:-}" ]; then
+# Stamp @pane_agent_state on the calling pane (not the focused one)
+if command -v tmux >/dev/null 2>&1 && [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+    WINDOW_ID=$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null) || true
     if [ -n "$STATE" ]; then
-        tmux set-option -w @agent_state "$STATE"
-        tmux set-option -p @pane_agent_state "$STATE"
+        tmux set-option -pt "$TMUX_PANE" @pane_agent_state "$STATE"
+        [ -n "$WINDOW_ID" ] && tmux set-option -wt "$WINDOW_ID" @agent_state "$STATE"
     else
-        tmux set-option -wu @agent_state
-        tmux set-option -pu @pane_agent_state
+        tmux set-option -put "$TMUX_PANE" @pane_agent_state
+        [ -n "$WINDOW_ID" ] && tmux set-option -wut "$WINDOW_ID" @agent_state
     fi
     tmux refresh-client -S 2>/dev/null || true
 fi
