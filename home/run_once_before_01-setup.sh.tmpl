@@ -22,6 +22,9 @@ fi
 STEP=0
 step() { STEP=$((STEP+1)); echo "[$STEP] $1"; }
 
+# Cache sudo credentials upfront so brew cask installs don't stall
+sudo -v
+
 step "Updating Homebrew..."
 brew update || echo "Warning: brew update failed, continuing..."
 brew trust domt4/autoupdate 2>/dev/null || true
