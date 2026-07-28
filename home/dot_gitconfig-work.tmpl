@@ -2,5 +2,8 @@
 [user]
 	name = {{ $id.work.name }}
 	email = {{ $id.work.email }}
-[core]
-	sshCommand = ssh -i ~/.ssh/work_ed25519 -o IdentitiesOnly=yes
+[url "https://github.com/"]
+	insteadOf = git@github.com:
+[credential "https://github.com"]
+	helper =
+	helper = !/opt/homebrew/bin/gh auth git-credential

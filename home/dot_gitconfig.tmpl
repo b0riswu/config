@@ -7,6 +7,16 @@
 	autocrlf = input
 	hooksPath = ~/.git-hooks
 	sshCommand = ssh -i ~/.ssh/personal_ed25519 -o IdentitiesOnly=yes
+[url "https://dsgithub.trendmicro.com/"]
+	insteadOf = git@dsgithub.trendmicro.com:
+[credential "https://dsgithub.trendmicro.com"]
+	helper =
+	helper = !/opt/homebrew/bin/gh auth git-credential
+[url "https://adc.github.trendmicro.com/"]
+	insteadOf = git@adc.github.trendmicro.com:
+[credential "https://adc.github.trendmicro.com"]
+	helper =
+	helper = !/opt/homebrew/bin/gh auth git-credential
 [fetch]
 	prune = true
 	pruneTags = true
