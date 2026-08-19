@@ -56,6 +56,10 @@
 [push]
 	autoSetupRemote = true
 	useForceIfIncludes = true
+[includeIf "hasconfig:remote.*.url:https://dsgithub.trendmicro.com/**"]
+	path = ~/.gitconfig-work
+[includeIf "hasconfig:remote.*.url:https://adc.github.trendmicro.com/**"]
+	path = ~/.gitconfig-work
 {{ range $id.work.orgs -}}
 [includeIf "hasconfig:remote.*.url:git@github.com:{{ . }}/**"]
 	path = ~/.gitconfig-work
